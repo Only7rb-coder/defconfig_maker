@@ -1,100 +1,60 @@
-name: Extract Defconfig from boot.img
+name: Extract Defconfig
 
 on:
   workflow_dispatch:
     inputs:
       bootimg_link:
-        description: 'Direct download link to the boot.img'
+        description: 'Gofile Link'
         required: true
         type: string
 
 jobs:
-  extract-and-upload:
+  extract:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
+      - name: Setup Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y jq lz4 lzop bzip2 xz-utils zstd file
-
-      - name: Download boot.img
-        run: |
-          echo "Downloading boot.img..."
-          wget -O boot.img "${{ github.event.inputs.bootimg_link }}"
-          
-          # Print file details to the console for debugging
-          echo "File details:"
-          ls -lh boot.img
-          file boot.img
-          
-          # Check if the file is suspiciously small (under 5MB is likely an HTML page)
-          FILESIZE=$(stat -c%s "boot.img")
-          if [ "$FILESIZE" -lt 5000000 ]; then
-            echo "❌ ERROR: The downloaded file is too small ($FILESIZE bytes)."
-            echo "You probably provided a Gofile webpage link instead of a DIRECT download link."
-            exit 1
-          fi
-
-      - name: Fetch extraction tools
-        run: |
-          # Get extract-ikconfig
+          # Get extraction scripts
           wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig
           chmod +x extract-ikconfig
-          
-          # Get magiskboot to unpack the Android boot image
           wget https://github.com/svidersky/magiskboot-binaries/raw/main/x86_64/magiskboot -O magiskboot
           chmod +x magiskboot
 
-      - name: Extract defconfig
+      - name: Smart Download
         run: |
-          echo "Unpacking boot.img to isolate the kernel..."
-          ./magiskboot unpack boot.img || true
+          echo "Downloading with Browser Spoofing..."
+          # We use a real browser User-Agent to stop Gofile from redirecting us to an HTML page
+          curl -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+               -o boot.img "${{ github.event.inputs.bootimg_link }}"
           
-          # Determine what to scan
-          TARGET_FILE="boot.img"
-          if [ -f "kernel" ]; then
-            echo "Successfully isolated raw 'kernel' file. Scanning..."
-            TARGET_FILE="kernel"
-          else
-            echo "Could not unpack boot.img, scanning the whole file as fallback..."
-          fi
+          FILE_TYPE=$(file boot.img)
+          echo "Downloaded file type: $FILE_TYPE"
           
-          echo "Attempting to extract config from $TARGET_FILE..."
-          ./extract-ikconfig $TARGET_FILE > defconfig_extracted.txt
-          
-          if [ ! -s defconfig_extracted.txt ]; then
-            echo "❌ ERROR: Failed to find kernel config."
-            echo "This means the kernel was compiled with CONFIG_IKCONFIG disabled."
-            echo "The manufacturer did not include the defconfig inside this boot image."
+          if [[ "$FILE_TYPE" == *"HTML"* ]]; then
+            echo "❌ ERROR: Still getting HTML. Gofile is blocking the script."
+            echo "FIX: Upload your boot.img to a GitHub Release or Discord and use that link instead."
             exit 1
           fi
-          echo "Successfully extracted defconfig."
 
-      - name: Upload extracted config to Gofile
+      - name: Process and Extract
         run: |
-          echo "Getting best Gofile server..."
-          SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+          # Try to unpack if it's an Android boot image
+          ./magiskboot unpack boot.img || echo "Not a standard Android boot image, scanning raw..."
           
-          echo "Uploading to Gofile..."
-          RESPONSE=$(curl -s -F file=@defconfig_extracted.txt https://${SERVER}.gofile.io/contents/uploadfile)
+          TARGET="boot.img"
+          [ -f "kernel" ] && TARGET="kernel"
           
-          DOWNLOAD_LINK=$(echo $RESPONSE | jq -r '.data.downloadPage')
+          ./extract-ikconfig "$TARGET" > defconfig_extracted.txt
           
-          echo "========================================="
-          echo "SUCCESS! Your defconfig is available at:"
-          echo "$DOWNLOAD_LINK"
-          echo "========================================="
-          
-          echo "### 🚀 Extraction Complete" >> $GITHUB_STEP_SUMMARY
-          echo "**Gofile Download Link:** [Click Here]($DOWNLOAD_LINK)" >> $GITHUB_STEP_SUMMARY
+          if [ ! -s defconfig_extracted.txt ]; then
+            echo "❌ ERROR: Config not found in kernel."
+            exit 1
+          fi
 
-      - name: Upload as GitHub Artifact (Backup)
+      - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: Extracted-Defconfig
+          name: extracted_defconfig
           path: defconfig_extracted.txt
-          retention-days: 5
