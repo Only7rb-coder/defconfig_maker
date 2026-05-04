@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       boot_url:
-        description: 'Direct Link to boot.img (e.g., Gofile, Dropbox, etc.)'
+        description: 'Direct Link to boot.img'
         required: true
 
 jobs:
@@ -21,18 +21,21 @@ jobs:
 
       - name: Download Boot Image
         run: |
-          # Use -L to follow redirects (important for cloud storage links)
-          wget -qL "${{ github.event.inputs.boot_url }}" -O boot.img
-          if [ ! -f boot.img ]; then
-            echo "Failed to download boot.img"
+          # Using -L to follow redirects and --user-agent to mimic a browser
+          wget -qL --user-agent="Mozilla/5.0" "${{ github.event.inputs.boot_url }}" -O boot.img
+          
+          # VALIDATION: Check if the file is actually an image
+          FILE_TYPE=$(file -b boot.img)
+          echo "Downloaded file type: $FILE_TYPE"
+          
+          if [[ "$FILE_TYPE" == *"HTML"* ]]; then
+            echo "ERROR: The link provided is a webpage, not a direct file download."
+            echo "Please use a direct link (e.g., Gofile direct link or GDrive export link)."
             exit 1
           fi
-          echo "File downloaded. Identification:"
-          file boot.img
 
       - name: Setup Latest Magiskboot
         run: |
-          # Downloading v27.0 for best compatibility with newer Android headers
           wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
           unzip -q Magisk-v27.0.apk "lib/x86_64/libmagiskboot.so"
           mv lib/x86_64/libmagiskboot.so magiskboot
@@ -41,15 +44,14 @@ jobs:
 
       - name: Unpack Boot Image
         run: |
-          ./magiskboot unpack boot.img
+          ./magiskboot unpack boot.img || { echo "Failed to unpack image. It might be corrupt or an unsupported format."; exit 1; }
           if [ ! -f "kernel" ]; then
-            echo "Error: Could not extract kernel blob from boot.img."
+            echo "Error: No kernel blob found in boot.img."
             exit 1
           fi
 
       - name: Extract Kernel Config
         run: |
-          # Download the official Linux kernel extraction script
           wget -q https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig
           chmod +x extract-ikconfig
           
@@ -59,10 +61,7 @@ jobs:
           if [ -s "extracted_defconfig" ]; then
             echo "Success: Config extracted."
           else
-            echo "--------------------------------------------------------"
             echo "FAILED: IKCONFIG is not enabled in this kernel."
-            echo "The developer did not include the config inside the binary."
-            echo "--------------------------------------------------------"
             exit 1
           fi
 
@@ -71,8 +70,3 @@ jobs:
         with:
           name: kernel_defconfig
           path: extracted_defconfig
-
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -f magiskboot kernel boot.img extract-ikconfig
