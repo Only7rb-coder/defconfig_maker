@@ -1,0 +1,70 @@
+name: Extract Defconfig from boot.img
+
+on:
+  workflow_dispatch:
+    inputs:
+      bootimg_link:
+        description: 'Direct download link to the boot.img'
+        required: true
+        type: string
+
+jobs:
+  extract-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install extraction dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq lz4 lzop bzip2 xz-utils zstd
+
+      - name: Download boot.img
+        run: |
+          echo "Downloading boot.img..."
+          wget -O boot.img "${{ github.event.inputs.bootimg_link }}"
+
+      - name: Fetch extract-ikconfig tool
+        run: |
+          wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig
+          chmod +x extract-ikconfig
+
+      - name: Extract defconfig
+        run: |
+          echo "Attempting to extract config..."
+          ./extract-ikconfig boot.img > defconfig_extracted.txt
+          
+          # Check if the file is empty
+          if [ ! -s defconfig_extracted.txt ]; then
+            echo "Error: Failed to extract defconfig. The kernel might not have been built with CONFIG_IKCONFIG enabled, or the boot.img is heavily obfuscated."
+            exit 1
+          fi
+          echo "Successfully extracted defconfig."
+
+      - name: Upload extracted config to Gofile
+        run: |
+          echo "Getting best Gofile server..."
+          SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+          
+          echo "Uploading to Gofile..."
+          RESPONSE=$(curl -s -F file=@defconfig_extracted.txt https://${SERVER}.gofile.io/contents/uploadfile)
+          
+          DOWNLOAD_LINK=$(echo $RESPONSE | jq -r '.data.downloadPage')
+          
+          echo "========================================="
+          echo "SUCCESS! Your defconfig is available at:"
+          echo "$DOWNLOAD_LINK"
+          echo "========================================="
+          
+          # Output to GitHub Actions step summary for easy viewing
+          echo "### 🚀 Extraction Complete" >> $GITHUB_STEP_SUMMARY
+          echo "**Gofile Download Link:** [Click Here]($DOWNLOAD_LINK)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload as GitHub Artifact (Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Extracted-Defconfig
+          path: defconfig_extracted.txt
+          retention-days: 5
