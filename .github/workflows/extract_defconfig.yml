@@ -16,29 +16,60 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install extraction dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq lz4 lzop bzip2 xz-utils zstd
+          sudo apt-get install -y jq lz4 lzop bzip2 xz-utils zstd file
 
       - name: Download boot.img
         run: |
           echo "Downloading boot.img..."
           wget -O boot.img "${{ github.event.inputs.bootimg_link }}"
+          
+          # Print file details to the console for debugging
+          echo "File details:"
+          ls -lh boot.img
+          file boot.img
+          
+          # Check if the file is suspiciously small (under 5MB is likely an HTML page)
+          FILESIZE=$(stat -c%s "boot.img")
+          if [ "$FILESIZE" -lt 5000000 ]; then
+            echo "❌ ERROR: The downloaded file is too small ($FILESIZE bytes)."
+            echo "You probably provided a Gofile webpage link instead of a DIRECT download link."
+            exit 1
+          fi
 
-      - name: Fetch extract-ikconfig tool
+      - name: Fetch extraction tools
         run: |
+          # Get extract-ikconfig
           wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig
           chmod +x extract-ikconfig
+          
+          # Get magiskboot to unpack the Android boot image
+          wget https://github.com/svidersky/magiskboot-binaries/raw/main/x86_64/magiskboot -O magiskboot
+          chmod +x magiskboot
 
       - name: Extract defconfig
         run: |
-          echo "Attempting to extract config..."
-          ./extract-ikconfig boot.img > defconfig_extracted.txt
+          echo "Unpacking boot.img to isolate the kernel..."
+          ./magiskboot unpack boot.img || true
           
-          # Check if the file is empty
+          # Determine what to scan
+          TARGET_FILE="boot.img"
+          if [ -f "kernel" ]; then
+            echo "Successfully isolated raw 'kernel' file. Scanning..."
+            TARGET_FILE="kernel"
+          else
+            echo "Could not unpack boot.img, scanning the whole file as fallback..."
+          fi
+          
+          echo "Attempting to extract config from $TARGET_FILE..."
+          ./extract-ikconfig $TARGET_FILE > defconfig_extracted.txt
+          
           if [ ! -s defconfig_extracted.txt ]; then
-            echo "Error: Failed to extract defconfig. The kernel might not have been built with CONFIG_IKCONFIG enabled, or the boot.img is heavily obfuscated."
+            echo "❌ ERROR: Failed to find kernel config."
+            echo "This means the kernel was compiled with CONFIG_IKCONFIG disabled."
+            echo "The manufacturer did not include the defconfig inside this boot image."
             exit 1
           fi
           echo "Successfully extracted defconfig."
@@ -58,7 +89,6 @@ jobs:
           echo "$DOWNLOAD_LINK"
           echo "========================================="
           
-          # Output to GitHub Actions step summary for easy viewing
           echo "### 🚀 Extraction Complete" >> $GITHUB_STEP_SUMMARY
           echo "**Gofile Download Link:** [Click Here]($DOWNLOAD_LINK)" >> $GITHUB_STEP_SUMMARY
 
