@@ -1,14 +1,14 @@
-name: Extract Defconfig from Boot Image
+name: Extract Defconfig
 
 on:
   workflow_dispatch:
     inputs:
       boot_url:
-        description: 'Direct Link to boot.img (Gdrive, Gofile, etc.)'
+        description: 'Direct Link to boot.img (e.g., Gofile, Dropbox, etc.)'
         required: true
 
 jobs:
-  extract:
+  extract_config:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -17,31 +17,62 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y p7zip-full wget
+          sudo apt-get install -y p7zip-full wget python3 file
 
       - name: Download Boot Image
         run: |
-          wget "${{ github.event.inputs.boot_url }}" -O boot.img
+          # Use -L to follow redirects (important for cloud storage links)
+          wget -qL "${{ github.event.inputs.boot_url }}" -O boot.img
+          if [ ! -f boot.img ]; then
+            echo "Failed to download boot.img"
+            exit 1
+          fi
+          echo "File downloaded. Identification:"
+          file boot.img
 
-      - name: Extract Kernel from Boot Image
+      - name: Setup Latest Magiskboot
         run: |
-          # We use magiskboot or basic extraction to get the kernel blob
-          wget https://github.com/topjohnwu/Magisk/releases/download/v26.4/Magisk-v26.4.apk
-          unzip Magisk-v26.4.apk "lib/x86_64/libmagiskboot.so"
+          # Downloading v27.0 for best compatibility with newer Android headers
+          wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
+          unzip -q Magisk-v27.0.apk "lib/x86_64/libmagiskboot.so"
           mv lib/x86_64/libmagiskboot.so magiskboot
           chmod +x magiskboot
-          ./magiskboot unpack boot.img
-          # This creates a file named 'kernel'
+          rm Magisk-v27.0.apk
 
-      - name: Extract Config
+      - name: Unpack Boot Image
         run: |
-          # Download the official Linux script to extract config
-          wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig
-          chmod +x extract-ikconfig
-          ./extract-ikconfig kernel > extracted_defconfig || echo "IKCONFIG not enabled in this kernel"
+          ./magiskboot unpack boot.img
+          if [ ! -f "kernel" ]; then
+            echo "Error: Could not extract kernel blob from boot.img."
+            exit 1
+          fi
 
-      - name: Upload Result
+      - name: Extract Kernel Config
+        run: |
+          # Download the official Linux kernel extraction script
+          wget -q https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig
+          chmod +x extract-ikconfig
+          
+          # Attempt extraction
+          ./extract-ikconfig kernel > extracted_defconfig 2>/dev/null || true
+          
+          if [ -s "extracted_defconfig" ]; then
+            echo "Success: Config extracted."
+          else
+            echo "--------------------------------------------------------"
+            echo "FAILED: IKCONFIG is not enabled in this kernel."
+            echo "The developer did not include the config inside the binary."
+            echo "--------------------------------------------------------"
+            exit 1
+          fi
+
+      - name: Upload Defconfig
         uses: actions/upload-artifact@v4
         with:
           name: kernel_defconfig
           path: extracted_defconfig
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f magiskboot kernel boot.img extract-ikconfig
