@@ -1,0 +1,47 @@
+name: Extract Defconfig from Boot Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      boot_url:
+        description: 'Direct Link to boot.img (Gdrive, Gofile, etc.)'
+        required: true
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full wget
+
+      - name: Download Boot Image
+        run: |
+          wget "${{ github.event.inputs.boot_url }}" -O boot.img
+
+      - name: Extract Kernel from Boot Image
+        run: |
+          # We use magiskboot or basic extraction to get the kernel blob
+          wget https://github.com/topjohnwu/Magisk/releases/download/v26.4/Magisk-v26.4.apk
+          unzip Magisk-v26.4.apk "lib/x86_64/libmagiskboot.so"
+          mv lib/x86_64/libmagiskboot.so magiskboot
+          chmod +x magiskboot
+          ./magiskboot unpack boot.img
+          # This creates a file named 'kernel'
+
+      - name: Extract Config
+        run: |
+          # Download the official Linux script to extract config
+          wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig
+          chmod +x extract-ikconfig
+          ./extract-ikconfig kernel > extracted_defconfig || echo "IKCONFIG not enabled in this kernel"
+
+      - name: Upload Result
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel_defconfig
+          path: extracted_defconfig
