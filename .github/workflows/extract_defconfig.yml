@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       bootimg_link:
-        description: 'Gofile Link'
+        description: 'Direct Link to boot.img'
         required: true
         type: string
 
@@ -12,49 +12,59 @@ jobs:
   extract:
     runs-on: ubuntu-latest
     steps:
-      - name: Setup Tools
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq lz4 lzop bzip2 xz-utils zstd file
-          # Get extraction scripts
-          wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig
+          sudo apt-get install -y jq lz4 lzop bzip2 xz-utils zstd file wget curl
+
+      - name: Fetch Extraction Tools
+        run: |
+          # Get the official kernel config extraction script
+          wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig -O extract-ikconfig
           chmod +x extract-ikconfig
-          wget https://github.com/svidersky/magiskboot-binaries/raw/main/x86_64/magiskboot -O magiskboot
+          
+          # Fixed Magiskboot link (using a more stable build)
+          wget https://github.com/magisk-modules-repo/magiskboot/raw/master/x86_64/magiskboot -O magiskboot || \
+          wget https://github.com/HuskyDG/magiskboot/releases/download/v26.1/magiskboot_x86_64 -O magiskboot
           chmod +x magiskboot
 
-      - name: Smart Download
+      - name: Download and Verify Image
         run: |
-          echo "Downloading with Browser Spoofing..."
-          # We use a real browser User-Agent to stop Gofile from redirecting us to an HTML page
-          curl -L -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+          echo "Downloading file..."
+          # Using a common browser User-Agent to avoid Gofile's bot blocks
+          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0" \
                -o boot.img "${{ github.event.inputs.bootimg_link }}"
           
-          FILE_TYPE=$(file boot.img)
-          echo "Downloaded file type: $FILE_TYPE"
+          # Check if we actually got a file or just an HTML error page
+          FILE_INFO=$(file boot.img)
+          echo "Status: $FILE_INFO"
           
-          if [[ "$FILE_TYPE" == *"HTML"* ]]; then
-            echo "❌ ERROR: Still getting HTML. Gofile is blocking the script."
-            echo "FIX: Upload your boot.img to a GitHub Release or Discord and use that link instead."
+          if [[ "$FILE_INFO" == *"HTML"* ]]; then
+            echo "❌ ERROR: Gofile gave us a webpage instead of the file."
+            echo "Please use a DIRECT link or try a different host like Discord."
             exit 1
           fi
 
-      - name: Process and Extract
+      - name: Extract Kernel Config
         run: |
-          # Try to unpack if it's an Android boot image
-          ./magiskboot unpack boot.img || echo "Not a standard Android boot image, scanning raw..."
+          # Try to unpack the boot image to find the raw kernel
+          ./magiskboot unpack boot.img || echo "Could not unpack; image might be raw kernel."
           
-          TARGET="boot.img"
-          [ -f "kernel" ] && TARGET="kernel"
+          # Decide what to scan: the unpacked kernel or the original file
+          [ -f "kernel" ] && SCAN_TARGET="kernel" || SCAN_TARGET="boot.img"
           
-          ./extract-ikconfig "$TARGET" > defconfig_extracted.txt
+          echo "Scanning $SCAN_TARGET for ikconfig..."
+          ./extract-ikconfig "$SCAN_TARGET" > defconfig_extracted.txt
           
           if [ ! -s defconfig_extracted.txt ]; then
-            echo "❌ ERROR: Config not found in kernel."
+            echo "❌ ERROR: Could not find kernel config."
+            echo "The kernel was likely compiled without CONFIG_IKCONFIG support."
             exit 1
           fi
+          echo "✅ Success! Config extracted."
 
-      - name: Upload Result
+      - name: Upload to GitHub Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: extracted_defconfig
+          name: extracted-defconfig
           path: defconfig_extracted.txt
