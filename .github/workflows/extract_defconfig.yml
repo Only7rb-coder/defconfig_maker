@@ -12,58 +12,64 @@ jobs:
   extract:
     runs-on: ubuntu-latest
     steps:
-      - name: Install System Dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y jq lz4 lzop bzip2 xz-utils zstd file wget curl
 
-      - name: Fetch Extraction Tools
+      - name: Fetch Tools
         run: |
-          # Get the official kernel config extraction script
+          # Kernel extraction script
           wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig -O extract-ikconfig
           chmod +x extract-ikconfig
           
-          # Fixed Magiskboot link (using a more stable build)
-          wget https://github.com/magisk-modules-repo/magiskboot/raw/master/x86_64/magiskboot -O magiskboot || \
-          wget https://github.com/HuskyDG/magiskboot/releases/download/v26.1/magiskboot_x86_64 -O magiskboot
+          # Stable Magiskboot (Using a reliable static binary host)
+          curl -L https://github.com/Pofofoo/magiskboot-binaries/raw/main/x86_64/magiskboot -o magiskboot
+          
+          # Verify magiskboot was actually downloaded
+          if [ ! -s magiskboot ]; then
+            echo "Failed to download magiskboot, trying secondary mirror..."
+            curl -L https://github.com/Rem01Gaming/magiskboot-binaries/raw/main/magiskboot -o magiskboot
+          fi
           chmod +x magiskboot
 
-      - name: Download and Verify Image
+      - name: Download boot.img
         run: |
           echo "Downloading file..."
-          # Using a common browser User-Agent to avoid Gofile's bot blocks
-          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0" \
+          # Disguise as a browser to avoid Gofile's block
+          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
                -o boot.img "${{ github.event.inputs.bootimg_link }}"
           
-          # Check if we actually got a file or just an HTML error page
           FILE_INFO=$(file boot.img)
           echo "Status: $FILE_INFO"
           
           if [[ "$FILE_INFO" == *"HTML"* ]]; then
-            echo "❌ ERROR: Gofile gave us a webpage instead of the file."
-            echo "Please use a DIRECT link or try a different host like Discord."
+            echo "❌ ERROR: Still getting HTML document from Gofile."
             exit 1
           fi
 
-      - name: Extract Kernel Config
+      - name: Extract Config
         run: |
-          # Try to unpack the boot image to find the raw kernel
-          ./magiskboot unpack boot.img || echo "Could not unpack; image might be raw kernel."
+          # Try to unpack the boot image
+          ./magiskboot unpack boot.img || echo "Magiskboot couldn't unpack, might be a raw kernel."
           
-          # Decide what to scan: the unpacked kernel or the original file
-          [ -f "kernel" ] && SCAN_TARGET="kernel" || SCAN_TARGET="boot.img"
+          # Target selection
+          if [ -f "kernel" ]; then
+            SCAN_TARGET="kernel"
+          else
+            SCAN_TARGET="boot.img"
+          fi
           
-          echo "Scanning $SCAN_TARGET for ikconfig..."
+          echo "Attempting extraction on $SCAN_TARGET..."
           ./extract-ikconfig "$SCAN_TARGET" > defconfig_extracted.txt
           
           if [ ! -s defconfig_extracted.txt ]; then
-            echo "❌ ERROR: Could not find kernel config."
-            echo "The kernel was likely compiled without CONFIG_IKCONFIG support."
+            echo "❌ ERROR: No ikconfig found in this kernel."
             exit 1
           fi
-          echo "✅ Success! Config extracted."
+          echo "✅ Extraction successful."
 
-      - name: Upload to GitHub Artifacts
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: extracted-defconfig
