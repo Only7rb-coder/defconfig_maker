@@ -1,0 +1,64 @@
+name: Samsung Defconfig Extractor
+
+on:
+  workflow_dispatch:
+    inputs:
+      rom_url:
+        description: 'Direct Link to Samsung ROM (ZIP or TAR)'
+        required: true
+      file_name:
+        description: 'Output filename for defconfig'
+        default: 'samsung_defconfig'
+        required: true
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full python3-pip
+          pip3 install lz4
+
+      - name: Download ROM
+        run: |
+          aria2c -s 16 -x 16 "${{ github.event.inputs.rom_url }}" -o firmware.zip || wget -O firmware.zip "${{ github.event.inputs.rom_url }}"
+
+      - name: Extract boot.img
+        run: |
+          # Samsung ROMs often contain an AP file which holds the boot.img
+          # We look for boot.img or boot.img.lz4
+          7z e firmware.zip AP*.tar.md5 || true
+          7z e firmware.zip boot.img* || true
+          7z e AP*.tar.md5 boot.img* || true
+          
+          if [ -f boot.img.lz4 ]; then
+            lz4 -d boot.img.lz4 boot.img
+          fi
+
+      - name: Extract defconfig from boot.img
+        run: |
+          # Download the script to extract config from kernel binary
+          wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig
+          chmod +x extract-ikconfig
+          
+          # Use scripts to find the compressed config within the boot image
+          ./extract-ikconfig boot.img > ${{ github.event.inputs.file_name }} || echo "Config not found in boot.img"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ github.event.inputs.file_name }}
+          tag_name: extraction-${{ github.run_id }}
+          name: Extracted Defconfig - ${{ github.run_id }}
+          body: |
+            Extracted from: ${{ github.event.inputs.rom_url }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
